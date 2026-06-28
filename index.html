@@ -278,6 +278,13 @@ tr.clickable:hover{ background: var(--bg); cursor:pointer; }
 }
 .field{ display:flex; flex-direction:column; gap:5px; }
 .field label{ font-size:12px; font-weight:600; color: var(--muted); }
+.preset-row{ display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 8px; }
+.preset-chip{
+  font-size:12px; padding:5px 10px; border-radius:14px;
+  border:1.5px solid var(--line); background:#fff; color: var(--navy);
+  cursor:pointer; line-height:1.3; text-align:left;
+}
+.preset-chip:hover{ background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .field input, .field select, .field textarea{
   font-family: var(--font-body);
   font-size: 14px;
@@ -1927,6 +1934,16 @@ function blankReport(){
   };
 }
 
+// Inserts a ready-made comment into a Coordinator Summary field (Major
+// Achievements / Pending Matters). If the field already has text, the
+// preset is added as a new line instead of overwriting it.
+function f_appendPreset(field, text){
+  const current = (formDraft[field] || '').trim();
+  formDraft[field] = current ? (current + '\n' + text) : text;
+  saveDraft();
+  render();
+}
+
 function updateStatusField(path, value){
   const parts = path.split('.');
   let obj = formDraft;
@@ -2106,9 +2123,23 @@ function renderReportForm(){
         <h3>7. Coordinator Summary</h3>
         <div class="field-grid">
           <div class="field"><label>Major Achievements</label>
+            <div class="preset-row">
+              <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','Session conducted successfully as per schedule.')">✓ Session conducted as scheduled</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','All participants actively engaged in the discussion.')">✓ Participants actively engaged</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','Module completed within the planned timeline.')">✓ Module completed on time</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','Faculty delivered the session smoothly with no logistical issues.')">✓ Smooth delivery, no issues</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','Attendance remained satisfactory; learning material was shared with all participants.')">✓ Good attendance, material shared</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','Quiz/assignment conducted successfully with positive participant feedback.')">✓ Quiz/assignment, good feedback</button>
+            </div>
             <textarea oninput="f_set('achievements', this.value)">${escapeHtml(f.achievements)}</textarea>
           </div>
           <div class="field"><label>Pending Matters Requiring Immediate Attention</label>
+            <div class="preset-row">
+              <button type="button" class="preset-chip" onclick="f_appendPreset('pendingMatters','No pending matters at this time; course proceeding as planned.')">✓ No pending matters</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('pendingMatters','Some participants reported difficulty accessing online material — follow-up required.')">⚠ Material access issue</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('pendingMatters','Next session\\'s venue/material confirmation pending from management.')">⚠ Venue/material pending</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('pendingMatters','Repeated absences noted among a few participants — follow-up required.')">⚠ Repeated absences</button>
+            </div>
             <textarea oninput="f_set('pendingMatters', this.value)">${escapeHtml(f.pendingMatters)}</textarea>
           </div>
         </div>
