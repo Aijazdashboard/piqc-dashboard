@@ -2908,6 +2908,7 @@ function renderAttendanceSheet(){
           <select onchange="as_setCourse(this.value)" style="min-width:180px">${courseOptions}</select>
         </div>
         <button class="btn btn-primary" onclick="window.print()">🖨️ Save PDF / Print</button>
+        <button class="btn btn-secondary" onclick="exportAttendanceSheetToExcel('${escapeHtml(attendanceSheetCourse)}')">📊 Download Excel</button>
       </div>
     </div>
 
@@ -3555,6 +3556,143 @@ async function exportReportToExcel(id){
   URL.revokeObjectURL(url);
  } catch(err){
   console.error('Excel export failed:', err);
+  alert('Sorry, the Excel export failed: ' + (err && err.message ? err.message : err));
+ }
+}
+
+/* ============================================================
+   EXCEL EXPORT — Attendance Sheet
+   Same colourful ExcelJS look as the Post-Class Report export:
+   navy title bar, coloured section header, P/A/L colour-coded
+   cells, zebra striping and an Attendance % column.
+   ============================================================ */
+async function exportAttendanceSheetToExcel(courseCode){
+ try{
+  if(typeof ExcelJS === 'undefined'){ alert('Excel library failed to load — check your internet connection and try again.'); return; }
+  const code = courseCode || attendanceSheetCourse;
+  const roster = DB.participants[code] || [];
+  if(!roster.length){ alert('No participants added yet for this course — add a roster on the Participants page first.'); return; }
+
+  const reports = reportsForCourse(code);
+  const allDates = courseAllSessionDates(code);
+  const sessionCols = allDates.map(d=>{
+    const matched = reports.find(r => (r.date||'') === d);
+    return { date: d, report: matched || null };
+  });
+  const { stats: attStats } = participantAttendanceStats(code);
+
+  const INK='FF1E2430', SUBINK='FF4B5667', PAPER='FFFFFFFF', HAIRLINE='FFE3E6EC',
+        GREEN='FF1F8A4C', RED='FFC0392B', GOLD='FFB8862C', ACCENT='FF1B4F8A', TINT='FFE8F0FB';
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Attendance Sheet', { views:[{ showGridLines:false }] });
+
+  const dateColCount = sessionCols.length;
+  const totalCols = 2 + dateColCount + 1; // Sr. + Name + dates + Attendance %
+  ws.getColumn(1).width = 6;   // Sr.
+  ws.getColumn(2).width = 26;  // Name
+  for(let c=3;c<2+dateColCount;c++) ws.getColumn(c).width = 11;
+  ws.getColumn(2+dateColCount+1).width = 16; // Attendance %
+
+  const setCell = (r1,c1,r2,c2,opts={})=>{
+    if(r2!==r1 || c2!==c1) ws.mergeCells(r1,c1,r2,c2);
+    const cell = ws.getCell(r1,c1);
+    cell.value = opts.value!==undefined ? opts.value : '';
+    cell.font = Object.assign({ name:'Calibri', size:12, color:{argb:INK} }, opts.font||{});
+    cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb: opts.fill || PAPER} };
+    cell.alignment = Object.assign({ vertical:'middle', horizontal:'left', wrapText:true, indent:1 }, opts.align||{});
+    if(opts.border) cell.border = opts.border;
+    if(opts.height) ws.getRow(r1).height = opts.height;
+    return cell;
+  };
+
+  let row = 1;
+  // ===== Title block =====
+  setCell(row,1,row,totalCols,{ value:'PIQC INSTITUTE OF QUALITY', fill:'FF15406F', font:{ bold:true, size:22, color:{argb:'FFFFFFFF'} }, align:{horizontal:'center'}, height:40 });
+  row++;
+  setCell(row,1,row,totalCols,{ value:'Course Attendance Sheet', fill:'FF1B4F8A', font:{ italic:true, size:14, color:{argb:'FFFFFFFF'} }, align:{horizontal:'center'}, height:26 });
+  row += 2;
+
+  // ===== Meta grid =====
+  setCell(row,1,row,2,{ value:'Course Title', font:{bold:true,size:12,color:{argb:ACCENT}}, fill:TINT, height:24 });
+  setCell(row,3,row,totalCols,{ value:code, font:{size:13,bold:true}, height:24 });
+  row++;
+  setCell(row,1,row,2,{ value:'Registered Participants', font:{bold:true,size:12,color:{argb:ACCENT}}, fill:TINT, height:24 });
+  setCell(row,3,row,totalCols,{ value:roster.length, font:{size:13}, height:24 });
+  row++;
+  setCell(row,1,row,2,{ value:'Coordinator', font:{bold:true,size:12,color:{argb:ACCENT}}, fill:TINT, height:24 });
+  setCell(row,3,row,totalCols,{ value:DB.coordinatorName || '—', font:{size:13}, height:24 });
+  row += 2;
+
+  // ===== Table header =====
+  const headerRow = row;
+  setCell(row,1,row,1,{ value:'Sr.', fill:'FF1B4F8A', font:{bold:true,size:11,color:{argb:'FFFFFFFF'}}, align:{horizontal:'center'}, height:34 });
+  setCell(row,2,row,2,{ value:'Participant Name', fill:'FF1B4F8A', font:{bold:true,size:11,color:{argb:'FFFFFFFF'}}, height:34 });
+  sessionCols.forEach((s,i)=>{
+    const c = 3+i;
+    setCell(row,c,row,c,{ value: fmtDateShort(s.date), fill:'FF1B4F8A', font:{bold:true,size:10,color:{argb:'FFFFFFFF'}}, align:{horizontal:'center'}, height:34 });
+  });
+  setCell(row,2+dateColCount+1,row,2+dateColCount+1,{ value:'Attendance %', fill:'FF1B4F8A', font:{bold:true,size:11,color:{argb:'FFFFFFFF'}}, align:{horizontal:'center'}, height:34 });
+  row++;
+
+  // ===== Table rows =====
+  roster.forEach((p,i)=>{
+    const zebra = i%2===0 ? PAPER : TINT;
+    setCell(row,1,row,1,{ value:i+1, fill:zebra, align:{horizontal:'center'}, border:{bottom:{style:'hair',color:{argb:HAIRLINE}}} });
+    setCell(row,2,row,2,{ value:p.name||'—', fill:zebra, border:{bottom:{style:'hair',color:{argb:HAIRLINE}}} });
+    sessionCols.forEach((s,ci)=>{
+      const c = 3+ci;
+      let mark = '', color = INK;
+      if(s.report){
+        const sm = s.report.attendance && s.report.attendance.statusMap;
+        const presentIds = (s.report.attendance && s.report.attendance.presentIds) || [];
+        const st = sm ? (sm[p.id] || 'A') : (presentIds.includes(p.id) ? 'P' : 'A');
+        mark = st;
+        color = st==='P' ? GREEN : st==='L' ? GOLD : RED;
+      }
+      setCell(row,c,row,c,{ value:mark, fill:zebra, font:{bold:true,size:12,color:{argb:color}}, align:{horizontal:'center'}, border:{bottom:{style:'hair',color:{argb:HAIRLINE}}} });
+    });
+    const st = attStats[p.id];
+    let pctVal = '—', pctColor = SUBINK;
+    if(st && st.pct !== null){
+      pctVal = st.pct + '%';
+      pctColor = st.pct < ATTENDANCE_THRESHOLD ? RED : GREEN;
+    }
+    setCell(row,2+dateColCount+1,row,2+dateColCount+1,{ value:pctVal, fill:zebra, font:{bold:true,size:12,color:{argb:pctColor}}, align:{horizontal:'center'}, border:{bottom:{style:'hair',color:{argb:HAIRLINE}}} });
+    row++;
+  });
+  row++;
+
+  // ===== Legend =====
+  setCell(row,1,row,totalCols,{ value:'P = Present     A = Absent     L = Leave     Blank = session not yet reported', font:{italic:true,size:11,color:{argb:SUBINK}}, height:22 });
+  row += 2;
+
+  // ===== Signature =====
+  setCell(row,1,row,totalCols,{ value:'', border:{top:{style:'thin',color:{argb:HAIRLINE}}} });
+  row++;
+  setCell(row,1,row,totalCols,{ value: DB.coordinatorName || 'Academic Coordinator', font:{bold:true,size:14,color:{argb:INK}}, align:{horizontal:'center'}, height:24 });
+  row++;
+  setCell(row,1,row,totalCols,{ value:`PIQC Institute of Quality — Generated ${fmtDate(todayISO())}`, font:{size:11,italic:true,color:{argb:SUBINK}}, align:{horizontal:'center'}, height:20 });
+
+  // Freeze header row + first two columns for easy scrolling
+  ws.views = [{ state:'frozen', xSplit:2, ySplit: headerRow, showGridLines:false }];
+
+  ws.pageSetup = {
+    orientation: 'landscape', paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+    margins: { left:0.3, right:0.3, top:0.4, bottom:0.4, header:0, footer:0 },
+    horizontalCentered: true
+  };
+  ws.pageSetup.printArea = `A1:${ws.getColumn(totalCols).letter}${row}`;
+
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type:'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `Attendance-Sheet_${code}.xlsx`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+ } catch(err){
+  console.error('Attendance Excel export failed:', err);
   alert('Sorry, the Excel export failed: ' + (err && err.message ? err.message : err));
  }
 }
