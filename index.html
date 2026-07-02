@@ -357,6 +357,12 @@ tr.clickable:hover{ background: var(--bg); cursor:pointer; }
 .att-sheet-page{ margin-bottom: 18px; }
 .att-sheet-page:last-child{ margin-bottom: 0; }
 
+/* ===================== ADMIN PANEL / COURSE DOCUMENTS ===================== */
+.doc-file-list{ display:flex; flex-direction:column; gap:6px; }
+.doc-file-row{ display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--bg); border:1px solid var(--line); border-radius:8px; font-size:13px; }
+.doc-file-row a{ color:var(--navy); text-decoration:none; font-weight:600; }
+.doc-file-row a:hover{ text-decoration:underline; }
+
 /* ===================== COURSE SCHEDULE EDITOR ===================== */
 .sched-table{ width:100%; border-collapse:collapse; font-size:13px; }
 .sched-table th, .sched-table td{ border:1px solid var(--line); padding:8px 10px; vertical-align:top; text-align:left; }
@@ -588,6 +594,7 @@ tr.clickable:hover{ background: var(--bg); cursor:pointer; }
 .print-tip b{ color: var(--navy); }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
 </head>
 <body>
 <div class="app">
@@ -605,6 +612,7 @@ tr.clickable:hover{ background: var(--bg); cursor:pointer; }
       <button data-view="attendance-sheet"><span>🧾</span> Attendance Sheet</button>
       <button data-view="course-details"><span>📅</span> Course Details</button>
       <button data-view="feedback-analysis"><span>💬</span> Feedback Analysis</button>
+      <button data-view="admin-panel"><span>🆕</span> Admin Panel</button>
       <button data-view="settings"><span>⚙️</span> Settings</button>
     </nav>
     <div class="sidebar-foot">
@@ -1347,8 +1355,23 @@ let DB = {
   courses: JSON.parse(JSON.stringify(DEFAULT_COURSES)),
   reports: [],
   participants: {},
-  schedules: {}
+  schedules: {},
+  courseDocs: {}
 };
+
+// ---- Admin Panel (temporary, in-memory state — not saved until "Create /
+// Update Course" is clicked) ----
+let adminMode = 'new';            // 'new' | 'existing'
+let adminCourseName = '';
+let adminExistingCourse = '';
+let adminTotalSessions = 10;
+let adminScheduleFileName = '';
+let adminParticipantsFileName = '';
+let adminParsedSchedule = [];     // [{module, tutor, dates:[iso...]}]
+let adminParsedParticipants = []; // [{name, mobile, email}]
+let adminLetterFiles = [];        // [{name, dataUrl}]
+let adminBusy = false;
+let adminMsg = '';
 
 let currentView = 'dashboard';
 let editingReportId = null;
@@ -1386,6 +1409,7 @@ async function loadDB(){
       DB.reports = parsed.reports || [];
       DB.participants = parsed.participants || {};
       DB.schedules = parsed.schedules || {};
+      DB.courseDocs = parsed.courseDocs || {};
     }
   }catch(e){
     // first run / no key yet -> keep defaults
@@ -1806,6 +1830,7 @@ function render(){
       root.innerHTML = `<div style="margin:-32px -32px 0;height:calc(100vh - 4px);"><iframe id="feedback-frame" title="Feedback Analysis Dashboard" style="width:100%;height:100%;border:none;display:block;background:#fff;"></iframe></div>`;
       loadFeedbackDashboard();
       break;
+    case 'admin-panel': root.innerHTML = renderAdminPanel(); break;
     case 'settings': root.innerHTML = renderSettings(); break;
     default: root.innerHTML = renderDashboard();
   }
@@ -2966,6 +2991,13 @@ function renderCourseDetails(){
   const totalModules = courseTotalModules(courseDetailsCourse);
   const modulesCompleted = courseModulesCompleted(courseDetailsCourse);
   const today = todayISO();
+  const courseDocs = (DB.courseDocs && DB.courseDocs[courseDetailsCourse]) || [];
+  const courseDocRows = courseDocs.map((f,i)=>`
+    <div class="doc-file-row">
+      <a href="${f.dataUrl}" download="${escapeHtml(f.name)}">📄 ${escapeHtml(f.name)}</a>
+      <span class="doc-empty" style="margin-left:auto;margin-right:10px">${f.addedAt ? 'added '+fmtDate(f.addedAt) : ''}</span>
+      <button class="icon-btn" title="Delete" onclick="cd_removeDoc(${i})">✕</button>
+    </div>`).join('');
 
   const rows = schedule.map((m,i)=>{
     const dates = m.dates || [];
@@ -3028,6 +3060,16 @@ function renderCourseDetails(){
       <button class="add-row-btn" onclick="cd_addModule()">+ Add Module</button>
       <div class="helper-text">Changes save automatically. Editing a date here doesn't move or rename any Session Reports already filed — it only updates the planned schedule shown on the Course Tracker and Attendance Sheet.</div>
     </div>
+
+    <div class="panel">
+      <h2>Course Documents (Tutor Letters)</h2>
+      <p style="margin:0 0 10px;color:var(--muted)">Letters sent to tutors for ${escapeHtml(courseDetailsCourse)}, stored for reference. Add more anytime, or remove ones no longer needed.</p>
+      <div class="btn-bar" style="margin-top:0">
+        <button class="btn btn-secondary" onclick="document.getElementById('cd-doc-input').click()">⬆ Upload Letter(s)</button>
+        <input type="file" id="cd-doc-input" accept=".docx,.doc" multiple style="display:none" onchange="cd_addDocs(this)">
+      </div>
+      ${courseDocs.length ? `<div class="doc-file-list" style="margin-top:12px">${courseDocRows}</div>` : `<div class="helper-text" style="margin-top:10px">No letters uploaded yet.</div>`}
+    </div>
   `;
 }
 
@@ -3064,6 +3106,32 @@ function cd_addModule(){
 function cd_removeModule(i){
   if(!confirm('Remove this module from the schedule? This only affects the planned schedule, not any saved reports.')) return;
   DB.schedules[courseDetailsCourse].splice(i,1);
+  saveDB();
+  render();
+}
+async function cd_addDocs(input){
+  const files = Array.from(input.files || []);
+  if(!files.length) return;
+  if(!DB.courseDocs) DB.courseDocs = {};
+  if(!DB.courseDocs[courseDetailsCourse]) DB.courseDocs[courseDetailsCourse] = [];
+  for(const f of files){
+    try{
+      const dataUrl = await new Promise((res,rej)=>{
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = () => rej(new Error('read failed'));
+        r.readAsDataURL(f);
+      });
+      DB.courseDocs[courseDetailsCourse].push({ name:f.name, dataUrl, addedAt: todayISO() });
+    }catch(e){ console.error(e); }
+  }
+  saveDB();
+  input.value = '';
+  render();
+}
+function cd_removeDoc(i){
+  if(!confirm('Remove this letter from the course?')) return;
+  DB.courseDocs[courseDetailsCourse].splice(i,1);
   saveDB();
   render();
 }
@@ -3178,6 +3246,8 @@ async function restoreBackup(input){
     DB.courses = (parsed.courses && parsed.courses.length) ? parsed.courses : DB.courses;
     DB.reports = parsed.reports || [];
     DB.participants = parsed.participants || {};
+    DB.schedules = parsed.schedules || {};
+    DB.courseDocs = parsed.courseDocs || {};
     await saveDB();
     alert('Backup restored successfully.');
     navigate('dashboard');
@@ -3204,9 +3274,417 @@ function s_removeCourse(i){
 }
 async function resetAllData(){
   if(!confirm('This will permanently delete ALL reports, participants, and reset courses to default. Continue?')) return;
-  DB = { coordinatorName:'', courses: JSON.parse(JSON.stringify(DEFAULT_COURSES)), reports: [], participants: {} };
+  DB = { coordinatorName:'', courses: JSON.parse(JSON.stringify(DEFAULT_COURSES)), reports: [], participants: {}, schedules: {}, courseDocs: {} };
   await saveDB();
   navigate('dashboard');
+}
+
+/* ============================================================
+   ADMIN PANEL — New Course Setup
+   Lets the coordinator type a course name and upload the three Word
+   documents already used for every course (program schedule, participant
+   list, tutor letters). The schedule and participant lists are parsed
+   automatically from any table found in the .docx file; everything shown
+   here is editable before saving, and remains editable afterwards on the
+   Course Details / Participants pages (and right here, if re-opened for an
+   existing course).
+   ============================================================ */
+
+// Turn a wide range of date text ("07/02/2026", "07-Feb-2026",
+// "February 7, 2026", "2026-02-07"...) into a YYYY-MM-DD string.
+// Returns '' if nothing usable was found.
+function parseFlexibleDate(str){
+  if(!str) return '';
+  str = String(str).trim();
+  let m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if(m) return `${m[1]}-${String(+m[2]).padStart(2,'0')}-${String(+m[3]).padStart(2,'0')}`;
+  // dd/mm/yyyy or dd-mm-yyyy (day-first, as used locally)
+  m = str.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if(m){
+    const day=+m[1], month=+m[2], year=+m[3];
+    if(month>=1 && month<=12 && day>=1 && day<=31) return `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+  }
+  // Fallback: let the browser's date parser handle things like
+  // "07 Feb 2026" or "February 7, 2026"
+  const cleaned = str.replace(/(\d+)(st|nd|rd|th)/i,'$1');
+  const d = new Date(cleaned);
+  if(!isNaN(d.getTime())) return d.toISOString().slice(0,10);
+  return '';
+}
+
+// Extract {module, tutor, dates[]} rows from any <table> in the converted
+// Word HTML whose header row looks like a schedule (has a module/topic
+// column and a date column). Consecutive rows with the same module name
+// are grouped into one entry with multiple session dates.
+function parseScheduleHtml(html){
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const tables = Array.from(doc.querySelectorAll('table'));
+  const result = [];
+  tables.forEach(table=>{
+    const rows = Array.from(table.querySelectorAll('tr'));
+    if(!rows.length) return;
+    const headerCells = Array.from(rows[0].querySelectorAll('th,td')).map(td=>(td.textContent||'').trim().toLowerCase());
+    let moduleCol=-1, tutorCol=-1, dateCol=-1;
+    headerCells.forEach((h,i)=>{
+      if(moduleCol===-1 && /module|topic|session|subject/.test(h)) moduleCol=i;
+      if(tutorCol===-1 && /tutor|faculty|instructor|trainer|resource\s*person/.test(h)) tutorCol=i;
+      if(dateCol===-1 && /date/.test(h)) dateCol=i;
+    });
+    if(moduleCol===-1 || dateCol===-1) return; // doesn't look like a schedule table
+    for(let r=1;r<rows.length;r++){
+      const cells = Array.from(rows[r].querySelectorAll('td,th')).map(td=>(td.textContent||'').trim());
+      if(!cells.length) continue;
+      const moduleText = (cells[moduleCol]||'').trim();
+      const tutorText = tutorCol>-1 ? (cells[tutorCol]||'').trim() : '';
+      const dateText = (cells[dateCol]||'').trim();
+      if(!moduleText && !dateText) continue;
+      const iso = parseFlexibleDate(dateText);
+      const key = moduleText.toLowerCase();
+      let entry = moduleText ? result.find(e=>e._key===key) : null;
+      if(!entry){
+        entry = { module: moduleText || `Session ${result.length+1}`, tutor: tutorText, dates: [], _key:key };
+        result.push(entry);
+      }
+      if(iso) entry.dates.push(iso);
+      if(!entry.tutor && tutorText) entry.tutor = tutorText;
+    }
+  });
+  result.forEach(e=>delete e._key);
+  return result;
+}
+
+// Extract {name, mobile, email} rows from a participant list .docx. Prefers
+// a table with recognisable headers; falls back to plain text lines (reusing
+// the same fuzzy line parser as the "Paste a Participant List" box).
+function parseParticipantsHtml(html){
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const tables = Array.from(doc.querySelectorAll('table'));
+  let list = [];
+  let usedTable = false;
+  tables.forEach(table=>{
+    const rows = Array.from(table.querySelectorAll('tr'));
+    if(!rows.length) return;
+    const headerCells = Array.from(rows[0].querySelectorAll('th,td')).map(td=>(td.textContent||'').trim().toLowerCase());
+    let nameCol=-1, mobileCol=-1, emailCol=-1;
+    headerCells.forEach((h,i)=>{
+      if(nameCol===-1 && /name/.test(h)) nameCol=i;
+      if(mobileCol===-1 && /mobile|phone|contact|cell/.test(h)) mobileCol=i;
+      if(emailCol===-1 && /e-?mail/.test(h)) emailCol=i;
+    });
+    if(nameCol===-1) return;
+    usedTable = true;
+    for(let r=1;r<rows.length;r++){
+      const cells = Array.from(rows[r].querySelectorAll('td,th')).map(td=>(td.textContent||'').trim());
+      if(!cells.length) continue;
+      const name = (cells[nameCol]||'').trim();
+      if(!name) continue;
+      list.push({
+        name,
+        mobile: mobileCol>-1 ? (cells[mobileCol]||'').trim() : '',
+        email: emailCol>-1 ? (cells[emailCol]||'').trim() : ''
+      });
+    }
+  });
+  if(!usedTable){
+    const text = doc.body ? (doc.body.textContent||'') : '';
+    text.split('\n').map(l=>l.trim()).filter(Boolean).forEach(line=>{
+      const p = parseParticipantLine(line);
+      if(p.name || p.mobile || p.email) list.push(p);
+    });
+  }
+  return list;
+}
+
+function renderAdminPanel(){
+  const courseOptions = DB.courses.map(c=>`<option value="${escapeHtml(c.code)}" ${c.code===adminExistingCourse?'selected':''}>${escapeHtml(c.code)}</option>`).join('');
+  const targetCode = adminMode==='new' ? adminCourseName.trim() : adminExistingCourse;
+  const existingDocs = (targetCode && DB.courseDocs && DB.courseDocs[targetCode]) || [];
+
+  const scheduleRows = adminParsedSchedule.map((m,i)=>{
+    const dateChips = (m.dates||[]).map((d,di)=>`
+      <div class="sched-date-row">
+        <input type="date" value="${escapeHtml(d)}" onchange="adm_sched_setDate(${i},${di},this.value)">
+        <button class="icon-btn" title="Remove this date" onclick="adm_sched_removeDate(${i},${di})">✕</button>
+      </div>`).join('');
+    return `
+    <tr>
+      <td class="sched-module-cell"><input type="text" value="${escapeHtml(m.module)}" oninput="adm_sched_setField(${i},'module',this.value)"></td>
+      <td class="sched-tutor-cell"><input type="text" value="${escapeHtml(m.tutor)}" placeholder="Tutor name" oninput="adm_sched_setField(${i},'tutor',this.value)"></td>
+      <td class="sched-dates-cell">
+        <div class="sched-dates">${dateChips || '<span class="doc-empty">No dates yet</span>'}
+          <button class="sched-add-date" onclick="adm_sched_addDate(${i})">+ Add session date</button>
+        </div>
+      </td>
+      <td class="row-actions" style="text-align:center"><button class="icon-btn" title="Remove this module" onclick="adm_sched_removeModule(${i})">✕</button></td>
+    </tr>`;
+  }).join('');
+
+  const participantRows = adminParsedParticipants.map((p,i)=>`
+    <tr>
+      <td>${i+1}</td>
+      <td><input type="text" value="${escapeHtml(p.name)}" placeholder="Participant name" oninput="adm_part_setField(${i},'name',this.value)"></td>
+      <td><input type="text" class="contact-cell" value="${escapeHtml(p.mobile)}" placeholder="03XX-XXXXXXX" oninput="adm_part_setField(${i},'mobile',this.value)"></td>
+      <td><input type="text" class="contact-cell" value="${escapeHtml(p.email)}" placeholder="name@email.com" oninput="adm_part_setField(${i},'email',this.value)"></td>
+      <td class="row-actions"><button class="icon-btn" title="Remove" onclick="adm_part_removeRow(${i})">✕</button></td>
+    </tr>`).join('');
+
+  const letterRows = adminLetterFiles.map((f,i)=>`
+    <div class="doc-file-row">
+      <span>📄 ${escapeHtml(f.name)}</span>
+      <button class="icon-btn" title="Remove" onclick="adm_removeLetter(${i})">✕</button>
+    </div>`).join('');
+
+  const existingDocRows = existingDocs.map((f,i)=>`
+    <div class="doc-file-row">
+      <a href="${f.dataUrl}" download="${escapeHtml(f.name)}">📄 ${escapeHtml(f.name)}</a>
+      <span class="doc-empty" style="margin-left:auto;margin-right:10px">${f.addedAt ? 'added '+fmtDate(f.addedAt) : ''}</span>
+      <button class="icon-btn" title="Delete" onclick="adm_deleteExistingDoc('${escapeHtml(targetCode)}',${i})">✕</button>
+    </div>`).join('');
+
+  return `
+    <h1 class="page-title">Admin Panel — New Course Setup</h1>
+    <p class="page-sub">Add a new course by typing its name and uploading the three Word documents you already prepare for it — the program schedule and participant list are read automatically from any table in the file. Review and fix anything below before saving; everything stays editable afterwards on Course Details / Participants too.</p>
+
+    <div class="panel">
+      <h2>1. Course</h2>
+      <div class="btn-bar" style="margin-top:0;margin-bottom:14px">
+        <button class="btn ${adminMode==='new'?'btn-primary':'btn-secondary'}" onclick="adm_setMode('new')">➕ New Course</button>
+        <button class="btn ${adminMode==='existing'?'btn-primary':'btn-secondary'}" onclick="adm_setMode('existing')">✏️ Update Existing Course</button>
+      </div>
+      ${adminMode==='new' ? `
+      <div style="display:flex;gap:14px;flex-wrap:wrap">
+        <div class="field" style="max-width:280px">
+          <label>New Course Name / Code</label>
+          <input type="text" value="${escapeHtml(adminCourseName)}" placeholder="e.g. CHQP-29" oninput="adminCourseName=this.value">
+        </div>
+        <div class="field" style="max-width:180px">
+          <label>Total Sessions (rough estimate — auto-updates once schedule dates are added)</label>
+          <input type="number" min="1" value="${adminTotalSessions}" oninput="adminTotalSessions=parseInt(this.value,10)||1">
+        </div>
+      </div>` : `
+      <div class="field" style="max-width:280px">
+        <label>Select Course to Update</label>
+        <select onchange="adm_setExistingCourse(this.value)">
+          <option value="">— Select —</option>
+          ${courseOptions}
+        </select>
+      </div>
+      <div class="helper-text">Uploading a schedule/participants file here <b>adds</b> to what's already saved (it won't erase existing rows) — remove anything unwanted below before saving. Uploaded letters are added to this course's document list.</div>`}
+    </div>
+
+    <div class="panel">
+      <h2>2. Program Schedule (Word .docx)</h2>
+      <p style="margin:0 0 10px;color:var(--muted)">Upload the module-by-module schedule document. Works best when it contains a table with columns like Module/Topic, Tutor, and Date.</p>
+      <div class="btn-bar" style="margin-top:0">
+        <button class="btn btn-secondary" onclick="document.getElementById('admin-schedule-input').click()">⬆ Upload Schedule (.docx)</button>
+        <input type="file" id="admin-schedule-input" accept=".docx" style="display:none" onchange="adm_handleScheduleFile(this)">
+        ${adminScheduleFileName ? `<span class="doc-empty">${escapeHtml(adminScheduleFileName)}</span>` : ''}
+        ${adminParsedSchedule.length ? `<button class="btn btn-danger" onclick="adm_clearSchedule()">Clear</button>` : ''}
+      </div>
+      ${adminParsedSchedule.length ? `
+      <div style="overflow-x:auto;margin-top:14px">
+        <table class="sched-table">
+          <thead><tr><th>Module / Topic</th><th>Tutor</th><th>Session Date(s)</th><th></th></tr></thead>
+          <tbody>${scheduleRows}</tbody>
+        </table>
+      </div>
+      <button class="add-row-btn" onclick="adm_sched_addModule()">+ Add Module</button>
+      ` : ''}
+    </div>
+
+    <div class="panel">
+      <h2>3. Participants List (Word .docx)</h2>
+      <p style="margin:0 0 10px;color:var(--muted)">Upload the participants list document. Works best with a table with columns like Name, Mobile, Email — plain text lines (one participant per line) also work.</p>
+      <div class="btn-bar" style="margin-top:0">
+        <button class="btn btn-secondary" onclick="document.getElementById('admin-participants-input').click()">⬆ Upload Participants (.docx)</button>
+        <input type="file" id="admin-participants-input" accept=".docx" style="display:none" onchange="adm_handleParticipantsFile(this)">
+        ${adminParticipantsFileName ? `<span class="doc-empty">${escapeHtml(adminParticipantsFileName)}</span>` : ''}
+        ${adminParsedParticipants.length ? `<button class="btn btn-danger" onclick="adm_clearParticipants()">Clear</button>` : ''}
+      </div>
+      ${adminParsedParticipants.length ? `
+      <div style="overflow-x:auto;margin-top:14px">
+        <table>
+          <thead><tr><th>Sr.</th><th>Name</th><th>Mobile Number</th><th>Email Address</th><th></th></tr></thead>
+          <tbody>${participantRows}</tbody>
+        </table>
+      </div>
+      <button class="add-row-btn" onclick="adm_part_addRow()">+ Add Row</button>
+      ` : ''}
+    </div>
+
+    <div class="panel">
+      <h2>4. Tutor Letters (Word .docx, one or more)</h2>
+      <p style="margin:0 0 10px;color:var(--muted)">Upload the letters you send tutors (module, date, day). These are stored as-is and attached to the course for reference — download or remove anytime from Course Details.</p>
+      <div class="btn-bar" style="margin-top:0">
+        <button class="btn btn-secondary" onclick="document.getElementById('admin-letters-input').click()">⬆ Upload Tutor Letter(s)</button>
+        <input type="file" id="admin-letters-input" accept=".docx,.doc" multiple style="display:none" onchange="adm_handleLetterFiles(this)">
+      </div>
+      ${letterRows ? `<div class="doc-file-list" style="margin-top:12px">${letterRows}</div>` : ''}
+      ${existingDocRows ? `
+      <div class="helper-text" style="margin-top:16px">Already saved for ${escapeHtml(targetCode)}:</div>
+      <div class="doc-file-list" style="margin-top:8px">${existingDocRows}</div>` : ''}
+    </div>
+
+    ${adminMsg ? `<div class="print-tip no-print">${adminBusy?'⏳':'💡'} ${escapeHtml(adminMsg)}</div>` : ''}
+
+    <div class="btn-bar">
+      <button class="btn btn-primary" ${adminBusy?'disabled':''} onclick="adm_saveCourse()">💾 ${adminMode==='new'?'Create Course':'Save Changes'}</button>
+    </div>
+  `;
+}
+
+function adm_setMode(mode){
+  adminMode = mode;
+  adminMsg = '';
+  render();
+}
+function adm_setExistingCourse(code){
+  adminExistingCourse = code;
+  render();
+}
+
+async function adm_handleScheduleFile(input){
+  const file = input.files[0];
+  if(!file) return;
+  adminScheduleFileName = file.name;
+  adminBusy = true; adminMsg = 'Reading schedule document...';
+  render();
+  try{
+    if(typeof mammoth === 'undefined') throw new Error('Word-reading library failed to load — check your internet connection.');
+    const arrayBuffer = await file.arrayBuffer();
+    const result = await mammoth.convertToHtml({ arrayBuffer });
+    const parsed = parseScheduleHtml(result.value);
+    adminParsedSchedule = adminParsedSchedule.concat(parsed);
+    adminMsg = parsed.length
+      ? `Parsed ${parsed.length} module(s) from "${file.name}". Please double-check the dates below before saving.`
+      : `Could not find a schedule table in "${file.name}". You can add modules manually below, or fix the file and re-upload.`;
+  }catch(e){
+    console.error(e);
+    adminMsg = 'Could not read this file — please make sure it is a .docx Word file (not .doc or PDF), then try again.';
+  }
+  adminBusy = false;
+  input.value = '';
+  render();
+}
+
+async function adm_handleParticipantsFile(input){
+  const file = input.files[0];
+  if(!file) return;
+  adminParticipantsFileName = file.name;
+  adminBusy = true; adminMsg = 'Reading participants document...';
+  render();
+  try{
+    if(typeof mammoth === 'undefined') throw new Error('Word-reading library failed to load — check your internet connection.');
+    const arrayBuffer = await file.arrayBuffer();
+    const result = await mammoth.convertToHtml({ arrayBuffer });
+    const parsed = parseParticipantsHtml(result.value);
+    adminParsedParticipants = adminParsedParticipants.concat(parsed);
+    adminMsg = parsed.length
+      ? `Parsed ${parsed.length} participant(s) from "${file.name}". Please double-check the list below before saving.`
+      : `Could not find any participant names in "${file.name}". You can add rows manually below, or fix the file and re-upload.`;
+  }catch(e){
+    console.error(e);
+    adminMsg = 'Could not read this file — please make sure it is a .docx Word file (not .doc or PDF), then try again.';
+  }
+  adminBusy = false;
+  input.value = '';
+  render();
+}
+
+async function adm_handleLetterFiles(input){
+  const files = Array.from(input.files || []);
+  if(!files.length) return;
+  adminBusy = true; adminMsg = 'Uploading letter(s)...';
+  render();
+  for(const f of files){
+    try{
+      const dataUrl = await new Promise((res,rej)=>{
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = () => rej(new Error('read failed'));
+        r.readAsDataURL(f);
+      });
+      adminLetterFiles.push({ name: f.name, dataUrl });
+    }catch(e){ console.error(e); }
+  }
+  adminBusy = false; adminMsg = '';
+  input.value = '';
+  render();
+}
+
+function adm_clearSchedule(){ adminParsedSchedule = []; adminScheduleFileName=''; adminMsg=''; render(); }
+function adm_clearParticipants(){ adminParsedParticipants = []; adminParticipantsFileName=''; adminMsg=''; render(); }
+function adm_removeLetter(i){ adminLetterFiles.splice(i,1); render(); }
+
+// Editable preview — schedule
+function adm_sched_setField(i, field, val){ adminParsedSchedule[i][field] = val; }
+function adm_sched_setDate(i, di, val){ adminParsedSchedule[i].dates[di] = val; }
+function adm_sched_addDate(i){ if(!adminParsedSchedule[i].dates) adminParsedSchedule[i].dates=[]; adminParsedSchedule[i].dates.push(todayISO()); render(); }
+function adm_sched_removeDate(i, di){ adminParsedSchedule[i].dates.splice(di,1); render(); }
+function adm_sched_addModule(){ adminParsedSchedule.push({ module:'New Module', tutor:'', dates:[] }); render(); }
+function adm_sched_removeModule(i){ adminParsedSchedule.splice(i,1); render(); }
+
+// Editable preview — participants
+function adm_part_setField(i, field, val){ adminParsedParticipants[i][field] = val; }
+function adm_part_addRow(){ adminParsedParticipants.push({ name:'', mobile:'', email:'' }); render(); }
+function adm_part_removeRow(i){ adminParsedParticipants.splice(i,1); render(); }
+
+// Delete an already-saved tutor letter (for the course currently selected
+// in "Update Existing Course" mode)
+function adm_deleteExistingDoc(code, i){
+  if(!confirm('Remove this letter from the course?')) return;
+  DB.courseDocs[code].splice(i,1);
+  saveDB();
+  render();
+}
+
+function adm_saveCourse(){
+  let code;
+  if(adminMode==='new'){
+    code = adminCourseName.trim();
+    if(!code){ alert('Course ka naam likhein.'); return; }
+    if(DB.courses.some(c=>c.code.toLowerCase()===code.toLowerCase())){
+      alert('Yeh course pehle se maujood hai — "Update Existing Course" select karein isay update karne ke liye.');
+      return;
+    }
+    DB.courses.push({ code, totalSessions: adminTotalSessions||10 });
+  } else {
+    code = adminExistingCourse;
+    if(!code){ alert('Pehle ek course select karein.'); return; }
+  }
+
+  if(adminParsedSchedule.length){
+    const cleaned = adminParsedSchedule.map(m=>({ module:(m.module||'').trim()||'Untitled Module', tutor:(m.tutor||'').trim(), dates:(m.dates||[]).filter(Boolean) }));
+    if(adminMode==='new' || !DB.schedules[code] || !DB.schedules[code].length){
+      DB.schedules[code] = cleaned;
+    } else {
+      DB.schedules[code] = DB.schedules[code].concat(cleaned);
+    }
+  }
+
+  if(adminParsedParticipants.length){
+    if(!DB.participants[code]) DB.participants[code] = [];
+    adminParsedParticipants.forEach(p=>{
+      if(!p.name && !p.mobile && !p.email) return;
+      DB.participants[code].push({ id: uid(), name:p.name||'', mobile:p.mobile||'', email:p.email||'' });
+    });
+  }
+
+  if(adminLetterFiles.length){
+    if(!DB.courseDocs) DB.courseDocs = {};
+    if(!DB.courseDocs[code]) DB.courseDocs[code] = [];
+    adminLetterFiles.forEach(f=> DB.courseDocs[code].push({ name:f.name, dataUrl:f.dataUrl, addedAt: todayISO() }));
+  }
+
+  saveDB();
+  const savedCode = code;
+  adminMode = 'new'; adminCourseName=''; adminExistingCourse=''; adminTotalSessions=10;
+  adminParsedSchedule=[]; adminParsedParticipants=[]; adminLetterFiles=[];
+  adminScheduleFileName=''; adminParticipantsFileName=''; adminMsg='';
+
+  alert(`"${savedCode}" saved! It's now tracked automatically across the Course Tracker, Attendance Sheet, Participants and Course Details pages.`);
+  courseDetailsCourse = savedCode;
+  navigate('course-details');
 }
 
 /* ============================================================
