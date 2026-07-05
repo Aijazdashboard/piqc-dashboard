@@ -1633,6 +1633,9 @@ function fmtDateShort(d){
 function uid(){ return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 
 const STATUS_OPTIONS = ['Yes','No','Partial','N/A'];
+// Class Conducted gets its own option list — "Postponed" only makes sense
+// for that one field, not for the others (Attendance Recorded, etc.).
+const CLASS_STATUS_OPTIONS = ['Yes','No','Partial','N/A','Postponed'];
 function statusBadgeClass(val){
   switch(val){
     case 'Yes': return 'badge-yes';
@@ -1650,10 +1653,11 @@ function taskBadgeClass(val){
   }
 }
 
-function statusSelect(name, value, idx){
+function statusSelect(name, value, idx, options){
   const v = value || 'Yes';
+  const opts = options || STATUS_OPTIONS;
   return `<select onchange="updateStatusField('${name}', this.value)">
-    ${STATUS_OPTIONS.map(o=>`<option value="${o}" ${o===v?'selected':''}>${o}</option>`).join('')}
+    ${opts.map(o=>`<option value="${o}" ${o===v?'selected':''}>${o}</option>`).join('')}
   </select>`;
 }
 
@@ -1681,11 +1685,63 @@ function reportsForCourse(code){
 function courseSchedule(code){
   return DB.schedules[code] || [];
 }
+// Finds every filed report that belongs to the same schedule module (i.e.
+// the same "week") as the given report — used so that a module with 2
+// classes in one week exports both class reports into a single Excel file
+// (one sheet each) instead of one file per class. Falls back to just the
+// one report if its date isn't found in the schedule, or if that module
+// only has a single session date.
+function reportsInSameWeek(r){
+  const schedule = courseSchedule(r.courseCode);
+  const module = schedule.find(m => (m.dates||[]).includes(r.date));
+  if(!module || (module.dates||[]).length < 2) return [r];
+  const weekDates = new Set(module.dates);
+  const matches = reportsForCourse(r.courseCode).filter(x => weekDates.has(x.date));
+  return matches.length ? matches : [r];
+}
 // Flat, sorted list of every session date across all modules for a course.
 function courseAllSessionDates(code){
   const dates = [];
   courseSchedule(code).forEach(m => (m.dates||[]).forEach(d => { if(d) dates.push(d); }));
   return dates.sort();
+}
+
+// ---- Automatic schedule cascading -----------------------------------------
+// Adds `days` (can be negative) to an ISO date string (YYYY-MM-DD) using UTC
+// math so results aren't affected by the browser's local timezone / DST.
+function addDaysISO(dateStr, days){
+  if(!dateStr) return dateStr;
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0,10);
+}
+
+// When one schedule date moves — a class is postponed, or a date is simply
+// edited on Course Details — every OTHER date that comes AFTER it across the
+// WHOLE schedule (later modules, the examination, the project presentation —
+// they all live in the same DB.schedules[code] list, so this covers them
+// automatically) shifts forward/back by the same number of days. This is
+// what lets one date change cascade through the rest of the course without
+// retyping anything or going back to the Word file.
+// `oldDate`/`newDate` are the before/after value of the ONE date that was
+// just edited (that slot should already be updated to newDate by the caller
+// before this runs). Returns how many other dates were shifted.
+function cascadeScheduleDates(code, oldDate, newDate){
+  if(!oldDate || !newDate || oldDate === newDate) return 0;
+  const oldMs = new Date(oldDate+'T00:00:00Z').getTime();
+  const newMs = new Date(newDate+'T00:00:00Z').getTime();
+  const deltaDays = Math.round((newMs - oldMs) / 86400000);
+  if(!deltaDays) return 0;
+  const schedule = DB.schedules[code] || [];
+  let shifted = 0;
+  schedule.forEach(m=>{
+    (m.dates||[]).forEach((d, di)=>{
+      if(!d || d <= oldDate || d === newDate) return; // only push dates strictly after the one that moved
+      m.dates[di] = addDaysISO(d, deltaDays);
+      shifted++;
+    });
+  });
+  return shifted;
 }
 // Total planned sessions = total dates across the module schedule (falls back to
 // the course's manual totalSessions if no schedule has been entered yet).
@@ -2042,12 +2098,13 @@ function renderReportForm(){
       <div class="form-section">
         <h3>1. Session Status</h3>
         <div class="status-grid">
-          ${statusRow('status.classConducted','Class Conducted as Scheduled', f.status.classConducted)}
+          ${statusRow('status.classConducted','Class Conducted as Scheduled', f.status.classConducted, CLASS_STATUS_OPTIONS)}
           ${statusRow('status.attendanceRecorded','Attendance Recorded', f.status.attendanceRecorded)}
           ${statusRow('status.materialShared','Lecture Material Shared', f.status.materialShared)}
           ${statusRow('status.assignmentGiven','Assignment Given', f.status.assignmentGiven)}
           ${statusRow('status.quizConducted','Quiz / Assessment Conducted', f.status.quizConducted)}
         </div>
+        ${f.status.classConducted === 'Postponed' ? `<div class="helper-text" style="margin-top:10px;color:var(--navy)"><b>Postponed:</b> fill in the <b>Next Session Date</b> below (section 5). When you save, this course's remaining schedule — including its exam/project dates — will shift forward automatically by the same gap, with no need to edit the Word file.</div>` : ''}
       </div>
 
       <div class="form-section">
@@ -2189,10 +2246,10 @@ function renderReportForm(){
   `;
 }
 
-function statusRow(path, label, value){
+function statusRow(path, label, value, options){
   return `<div class="status-row">
     <label>${label}</label>
-    ${statusSelect(path, value)}
+    ${statusSelect(path, value, null, options)}
   </div>`;
 }
 
@@ -2244,6 +2301,31 @@ async function submitReport(){
     alert('Please fill in Batch No. and Session No. before saving.');
     return;
   }
+
+  // Postponed class → automatically cascade the schedule. The date this
+  // report was filed for (formDraft.date) is the ONE schedule slot that
+  // moved; formDraft.nextSession.nextDate is where it moved to. Everything
+  // after it in the same course's schedule (later modules, exam, project)
+  // shifts by the same number of days, and this one date is also updated
+  // in the schedule itself so Course Details reflects the new date too.
+  let cascadeShifted = 0;
+  if(formDraft.status.classConducted === 'Postponed' && formDraft.date && formDraft.nextSession.nextDate && formDraft.date !== formDraft.nextSession.nextDate){
+    const code = formDraft.courseCode;
+    const schedule = DB.schedules[code] || [];
+    let matchedSlot = false;
+    schedule.forEach(m=>{
+      (m.dates||[]).forEach((d,di)=>{
+        if(d === formDraft.date){ m.dates[di] = formDraft.nextSession.nextDate; matchedSlot = true; }
+      });
+    });
+    cascadeShifted = cascadeScheduleDates(code, formDraft.date, formDraft.nextSession.nextDate);
+    if(!matchedSlot){
+      // The report's date wasn't found in the schedule (e.g. schedule not
+      // entered yet, or edited elsewhere) — nothing to cascade against.
+      cascadeShifted = 0;
+    }
+  }
+
   if(editingReportId){
     const idx = DB.reports.findIndex(r=>r.id===editingReportId);
     formDraft.id = editingReportId;
@@ -2255,6 +2337,9 @@ async function submitReport(){
   await saveDB();
   clearDraft();
   navigate('report-detail', {id: formDraft.id});
+  if(cascadeShifted){
+    setTimeout(()=>alert(`Report saved. Because this class was Postponed, the rest of the ${formDraft.courseCode} schedule (${cascadeShifted} later date${cascadeShifted===1?'':'s'}, including exam/project if applicable) was shifted automatically to match — check Course Details to confirm.`), 30);
+  }
 }
 
 function cancelReportForm(){
@@ -2280,8 +2365,8 @@ function renderReportsLog(){
   const rows = list.map(r=>{
     const conducted = r.status.classConducted;
     const issuesCount = (r.issues||[]).length;
-    const stampClass = conducted === 'Yes' ? (issuesCount ? 'stamp-warn' : 'stamp-ok') : 'stamp-alert';
-    const stampText = conducted === 'Yes' ? (issuesCount ? 'Review Needed' : 'On Track') : 'Not Conducted';
+    const stampClass = conducted === 'Yes' ? (issuesCount ? 'stamp-warn' : 'stamp-ok') : (conducted === 'Postponed' ? 'stamp-warn' : 'stamp-alert');
+    const stampText = conducted === 'Yes' ? (issuesCount ? 'Review Needed' : 'On Track') : (conducted === 'Postponed' ? 'Postponed' : 'Not Conducted');
     return `<tr class="clickable" onclick="navigate('report-detail',{id:'${r.id}'})">
       <td><span class="course-code">${escapeHtml(r.courseCode)}</span></td>
       <td>${escapeHtml(r.batchNo)}</td>
@@ -2375,8 +2460,8 @@ function renderReportDetail(){
           <h1>Academic Coordinator Post-Class Report</h1>
           <div class="org">PIQC Institute of Quality</div>
         </div>
-        <div class="stamp ${r.status.classConducted==='Yes' ? 'stamp-ok':'stamp-alert'}">
-          ${r.status.classConducted==='Yes' ? 'Session Conducted' : 'Not Conducted'}
+        <div class="stamp ${r.status.classConducted==='Yes' ? 'stamp-ok': r.status.classConducted==='Postponed' ? 'stamp-warn' : 'stamp-alert'}">
+          ${r.status.classConducted==='Yes' ? 'Session Conducted' : r.status.classConducted==='Postponed' ? 'Postponed' : 'Not Conducted'}
         </div>
       </div>
 
@@ -3058,7 +3143,11 @@ function renderCourseDetails(){
       ` : `<div class="empty-state"><div class="big">No schedule added yet</div><p>Add the first module below to start building ${escapeHtml(courseDetailsCourse)}'s program schedule.</p></div>`}
 
       <button class="add-row-btn" onclick="cd_addModule()">+ Add Module</button>
-      <div class="helper-text">Changes save automatically. Editing a date here doesn't move or rename any Session Reports already filed — it only updates the planned schedule shown on the Course Tracker and Attendance Sheet.</div>
+      <div class="helper-text">Changes save automatically — including postponed/moved dates, which shift the rest of this course's schedule (exam/project included) automatically. Editing a date here doesn't move or rename any Session Reports already filed.</div>
+      <div class="btn-bar" style="margin-top:14px">
+        <button class="btn btn-secondary" onclick="exportScheduleToWord('${escapeHtml(courseDetailsCourse)}')">📄 Download Schedule (Word)</button>
+      </div>
+      <div class="helper-text">Downloads the schedule shown above as a Word file, formatted like a normal program-schedule document — ready to print, with every date already updated here.</div>
     </div>
 
     <div class="panel">
@@ -3082,13 +3171,24 @@ function cd_setField(i, field, val){
   saveDB();
 }
 function cd_setDate(i, di, val){
-  DB.schedules[courseDetailsCourse][i].dates[di] = val;
+  const code = courseDetailsCourse;
+  const oldVal = DB.schedules[code][i].dates[di];
+  DB.schedules[code][i].dates[di] = val;
+  const shifted = cascadeScheduleDates(code, oldVal, val);
   saveDB();
   render();
+  if(shifted){
+    // Non-blocking — the date is already saved and the screen already
+    // re-rendered with the new schedule; this just confirms what happened.
+    setTimeout(()=>alert(`Date updated. ${shifted} later session date${shifted===1?'':'s'} in this course's schedule (including exam/project dates, if any) ${shifted===1?'was':'were'} shifted automatically by the same number of days — no need to edit them one by one.`), 30);
+  }
 }
 function cd_addDate(i){
   if(!DB.schedules[courseDetailsCourse][i].dates) DB.schedules[courseDetailsCourse][i].dates = [];
-  DB.schedules[courseDetailsCourse][i].dates.push(todayISO());
+  // Left blank on purpose (rather than defaulting to today) so that filling
+  // it in for the first time is treated as a fresh entry, not a "postponed"
+  // edit — that keeps cascadeScheduleDates from firing on brand-new rows.
+  DB.schedules[courseDetailsCourse][i].dates.push('');
   saveDB();
   render();
 }
@@ -3134,6 +3234,53 @@ function cd_removeDoc(i){
   DB.courseDocs[courseDetailsCourse].splice(i,1);
   saveDB();
   render();
+}
+
+// Downloads the current schedule (whatever is shown on this page — including
+// any postponed/shifted dates) as a Word (.doc) file, formatted as a plain
+// program-schedule document/table. This is the trick that lets a .doc file
+// be built with nothing but HTML: browsers and Word both understand a Blob
+// of HTML served with the "application/msword" type as a real .doc file, so
+// there's no separate docx-building library needed. It opens, edits, and
+// prints in Word exactly like any other schedule document — nothing about
+// it reveals it came from the dashboard.
+function exportScheduleToWord(code){
+  const schedule = courseSchedule(code);
+  if(!schedule.length){ alert('No schedule to export yet — add at least one module first.'); return; }
+  const rows = schedule.map(m=>{
+    const dates = (m.dates||[]).filter(Boolean).map(fmtDate).join('<br>') || '—';
+    return `<tr>
+      <td style="border:1px solid #333;padding:6px 10px">${escapeHtml(m.module||'')}</td>
+      <td style="border:1px solid #333;padding:6px 10px">${escapeHtml(m.tutor||'')}</td>
+      <td style="border:1px solid #333;padding:6px 10px">${dates}</td>
+    </tr>`;
+  }).join('');
+
+  const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+  <head><meta charset="utf-8"><title>${escapeHtml(code)} Schedule</title></head>
+  <body style="font-family:Calibri,Arial,sans-serif">
+    <h2 style="text-align:center;margin-bottom:2px">PIQC INSTITUTE OF QUALITY</h2>
+    <h3 style="text-align:center;margin-top:0;font-weight:normal">Program Schedule — ${escapeHtml(code)}</h3>
+    <p style="text-align:right;color:#555">Updated: ${escapeHtml(fmtDate(todayISO()))}</p>
+    <table style="border-collapse:collapse;width:100%;font-size:13px">
+      <thead>
+        <tr>
+          <th style="border:1px solid #333;padding:6px 10px;background:#EEE;text-align:left">Module / Topic</th>
+          <th style="border:1px solid #333;padding:6px 10px;background:#EEE;text-align:left">Tutor</th>
+          <th style="border:1px solid #333;padding:6px 10px;background:#EEE;text-align:left">Session Date(s)</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </body></html>`;
+
+  const blob = new Blob(['\ufeff', html], { type: 'application/msword' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Course-Schedule_${code}.doc`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 /* ============================================================
@@ -3469,7 +3616,7 @@ function renderAdminPanel(){
           ${courseOptions}
         </select>
       </div>
-      <div class="helper-text">Uploading a schedule/participants file here <b>adds</b> to what's already saved (it won't erase existing rows) — remove anything unwanted below before saving. Uploaded letters are added to this course's document list.</div>`}
+      <div class="helper-text">Uploading a <b>schedule</b> file here <b>replaces</b> the course's entire schedule — the easiest way to update dates, tutors, or module topics is to edit your schedule Word document and re-upload it here. Uploading a <b>participants</b> file <b>adds</b> to the existing roster (it won't erase current rows). Uploaded letters are added to this course's document list.</div>`}
     </div>
 
     <div class="panel">
@@ -3655,11 +3802,11 @@ function adm_saveCourse(){
 
   if(adminParsedSchedule.length){
     const cleaned = adminParsedSchedule.map(m=>({ module:(m.module||'').trim()||'Untitled Module', tutor:(m.tutor||'').trim(), dates:(m.dates||[]).filter(Boolean) }));
-    if(adminMode==='new' || !DB.schedules[code] || !DB.schedules[code].length){
-      DB.schedules[code] = cleaned;
-    } else {
-      DB.schedules[code] = DB.schedules[code].concat(cleaned);
-    }
+    // Always replace the full schedule with the freshly uploaded file. This
+    // makes updating an existing course's dates/tutor/topics as simple as
+    // editing the schedule Word document and re-uploading it here — no need
+    // to hand-edit each field on the Course Details page.
+    DB.schedules[code] = cleaned;
   }
 
   if(adminParsedParticipants.length){
@@ -3795,12 +3942,12 @@ function xlsxSessionsProgressBarSVG(conducted, planned){
   </svg>`;
 }
 
-async function exportReportToExcel(id){
- try{
-  if(typeof ExcelJS === 'undefined'){ alert('Excel library failed to load — check your internet connection and try again.'); return; }
-  const r = DB.reports.find(x=>x.id===id);
-  if(!r) return;
-
+// Builds ONE worksheet (named sheetName) inside an existing workbook for a
+// single report `r`. Pulled out of exportReportToExcel so it can be called
+// once per class when a week has multiple classes (multi-sheet export), or
+// once for a normal single-class report — the sheet content is identical
+// either way.
+async function buildReportWorksheet(wb, r, sheetName){
   const roster = DB.participants[r.courseCode] || [];
   const presentIds = (r.attendance && r.attendance.presentIds) || [];
   const useRoster = roster.length>0 && r.attendance && Array.isArray(r.attendance.presentIds);
@@ -3835,8 +3982,7 @@ async function exportReportToExcel(id){
     svgStringToPngDataUrl(xlsxSessionsProgressBarSVG(s.sessionsCompleted, totalSessionsPlanned), 300, 70),
   ]);
 
-  const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet('Post-Class Report', { views:[{ showGridLines:false }] });
+  const ws = wb.addWorksheet(sheetName, { views:[{ showGridLines:false }] });
   ws.properties.defaultRowHeight = 23;
   ws.getColumn(1).width = 28;
   for(let c=2;c<=8;c++) ws.getColumn(c).width = 15;
@@ -3899,7 +4045,7 @@ async function exportReportToExcel(id){
   // ===== 1. Session Status =====
   sectionHeader('1. Session Status');
   const statusStartRow = row;
-  kvRow('Class Conducted as Scheduled', r.status.classConducted, r.status.classConducted==='Yes'?GREEN:RED);
+  kvRow('Class Conducted as Scheduled', r.status.classConducted, r.status.classConducted==='Yes'?GREEN:(r.status.classConducted==='Postponed'?GOLD:RED));
   kvRow('Attendance Recorded', r.status.attendanceRecorded, r.status.attendanceRecorded==='Yes'?GREEN:RED);
   kvRow('Lecture Material Shared', r.status.materialShared, r.status.materialShared==='Yes'?GREEN:RED);
   kvRow('Assignment Given', r.status.assignmentGiven, r.status.assignmentGiven==='Yes'?GREEN:RED);
@@ -4024,12 +4170,45 @@ async function exportReportToExcel(id){
     horizontalCentered: true
   };
   ws.pageSetup.printArea = `A1:H${row}`;
+}
+
+// Sheet names in Excel: max 31 chars, and can't contain \ / ? * [ ] :
+function safeSheetName(name){
+  return String(name).replace(/[\\/?*\[\]:]/g, '-').slice(0,31) || 'Sheet';
+}
+
+// Entry point used by the "Download Excel" button. If this report's class
+// belongs to a week that has more than one class scheduled (a module with 2+
+// session dates), ALL of that week's filed reports are exported together
+// into ONE workbook — Sheet1 for the first class's date, Sheet2 for the
+// second, etc. Otherwise it behaves exactly as before: one sheet, one file.
+async function exportReportToExcel(id){
+ try{
+  if(typeof ExcelJS === 'undefined'){ alert('Excel library failed to load — check your internet connection and try again.'); return; }
+  const r = DB.reports.find(x=>x.id===id);
+  if(!r) return;
+
+  const weekReports = reportsInSameWeek(r);
+  const wb = new ExcelJS.Workbook();
+  const code = r.courseCode;
+
+  if(weekReports.length > 1){
+    for(let i=0;i<weekReports.length;i++){
+      const wr = weekReports[i];
+      await buildReportWorksheet(wb, wr, safeSheetName(`Class ${i+1} - ${fmtDate(wr.date)}`));
+    }
+  } else {
+    await buildReportWorksheet(wb, r, 'Post-Class Report');
+  }
 
   const buf = await wb.xlsx.writeBuffer();
   const blob = new Blob([buf], { type:'application/octet-stream' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = `Post-Class-Report_${code}_Batch${r.batchNo}_Session${r.sessionNo}.xlsx`;
+  a.href = url;
+  a.download = weekReports.length > 1
+    ? `Post-Class-Report_${code}_Batch${r.batchNo}_Week-${weekReports.map(x=>fmtDate(x.date).replace(/\s+/g,'')).join('_')}.xlsx`
+    : `Post-Class-Report_${code}_Batch${r.batchNo}_Session${r.sessionNo}.xlsx`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
  } catch(err){
