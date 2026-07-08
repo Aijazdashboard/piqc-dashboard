@@ -611,8 +611,6 @@ tr.clickable:hover{ background: var(--bg); cursor:pointer; }
       <button data-view="participants" class="active"><span>👥</span> Participants</button>
       <button data-view="attendance-sheet"><span>🧾</span> Attendance Sheet</button>
       <button data-view="course-details"><span>📅</span> Course Details</button>
-      <button data-view="new-presentation-report"><span>🎤</span> Presentation Report</button>
-      <button data-view="presentation-reports-log"><span>🎓</span> Presentation Reports Log</button>
       <button data-view="feedback-analysis"><span>💬</span> Feedback Analysis</button>
       <button data-view="admin-panel"><span>🆕</span> Admin Panel</button>
       <button data-view="settings"><span>⚙️</span> Settings</button>
@@ -1358,9 +1356,7 @@ let DB = {
   reports: [],
   participants: {},
   schedules: {},
-  courseDocs: {},
-  presentationGroups: {},
-  presentationReports: []
+  courseDocs: {}
 };
 
 // ---- Admin Panel (temporary, in-memory state — not saved until "Create /
@@ -1386,9 +1382,6 @@ let participantsCourse = '';
 let bulkAddText = '';
 let attendanceSheetCourse = '';
 let courseDetailsCourse = '';
-let presentationDraft = null;
-let editingPresentationId = null;
-let presentationDetailId = null;
 let storageOK = true;
 let cloudCfg = { token:'', gistId:'' };
 let cloudStatus = '';
@@ -1417,8 +1410,6 @@ async function loadDB(){
       DB.participants = parsed.participants || {};
       DB.schedules = parsed.schedules || {};
       DB.courseDocs = parsed.courseDocs || {};
-      DB.presentationGroups = parsed.presentationGroups || {};
-      DB.presentationReports = parsed.presentationReports || [];
     }
   }catch(e){
     // first run / no key yet -> keep defaults
@@ -1882,12 +1873,6 @@ function navigate(view, param){
   }
   if(view === 'report-detail'){ detailReportId = param.id; }
   if(view === 'reports-log' && param && param.filter !== undefined){ logFilter = param.filter; }
-  if(view === 'new-presentation-report'){
-    const wantedId = (param && param.id) || null;
-    editingPresentationId = wantedId;
-    presentationDraft = wantedId ? JSON.parse(JSON.stringify(DB.presentationReports.find(r=>r.id===wantedId))) : blankPresentationReport();
-  }
-  if(view === 'presentation-report-detail'){ presentationDetailId = param.id; }
   render();
   window.scrollTo(0,0);
 }
@@ -1905,9 +1890,6 @@ function render(){
     case 'participants': root.innerHTML = renderParticipants(); break;
     case 'attendance-sheet': root.innerHTML = renderAttendanceSheet(); break;
     case 'course-details': root.innerHTML = renderCourseDetails(); break;
-    case 'new-presentation-report': root.innerHTML = renderPresentationReportForm(); break;
-    case 'presentation-report-detail': root.innerHTML = renderPresentationReportDetail(); break;
-    case 'presentation-reports-log': root.innerHTML = renderPresentationReportsLog(); break;
     case 'feedback-analysis':
       root.innerHTML = `<div style="margin:-32px -32px 0;height:calc(100vh - 4px);"><iframe id="feedback-frame" title="Feedback Analysis Dashboard" style="width:100%;height:100%;border:none;display:block;background:#fff;"></iframe></div>`;
       loadFeedbackDashboard();
@@ -2256,6 +2238,12 @@ function renderReportForm(){
               <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','Faculty delivered the session smoothly with no logistical issues.')">✓ Smooth delivery, no issues</button>
               <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','Attendance remained satisfactory; learning material was shared with all participants.')">✓ Good attendance, material shared</button>
               <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','Quiz/assignment conducted successfully with positive participant feedback.')">✓ Quiz/assignment, good feedback</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','Participants demonstrated strong understanding of the key concepts covered.')">✓ Strong understanding shown</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','Interactive discussion and Q&A added significant value to the session.')">✓ Good Q&A / discussion</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','Practical examples and case studies were well received by participants.')">✓ Case studies well received</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','All planned learning objectives for this session were achieved.')">✓ Learning objectives achieved</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','Positive verbal feedback received from participants at the end of the session.')">✓ Positive verbal feedback</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('achievements','Session ran on time and covered the full planned agenda.')">✓ On time, full agenda covered</button>
             </div>
             <textarea oninput="f_set('achievements', this.value)">${escapeHtml(f.achievements)}</textarea>
           </div>
@@ -2265,6 +2253,11 @@ function renderReportForm(){
               <button type="button" class="preset-chip" onclick="f_appendPreset('pendingMatters','Some participants reported difficulty accessing online material — follow-up required.')">⚠ Material access issue</button>
               <button type="button" class="preset-chip" onclick="f_appendPreset('pendingMatters','Next session\\'s venue/material confirmation pending from management.')">⚠ Venue/material pending</button>
               <button type="button" class="preset-chip" onclick="f_appendPreset('pendingMatters','Repeated absences noted among a few participants — follow-up required.')">⚠ Repeated absences</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('pendingMatters','A few participants requested extra reading material for better understanding.')">⚠ Extra material requested</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('pendingMatters','Technical/connectivity issues affected part of the session — follow-up required.')">⚠ Technical/connectivity issue</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('pendingMatters','Assignment submission deadline needs to be communicated more clearly to participants.')">⚠ Assignment deadline unclear</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('pendingMatters','Some participants requested a recap of the previous module before proceeding further.')">⚠ Recap of previous module needed</button>
+              <button type="button" class="preset-chip" onclick="f_appendPreset('pendingMatters','Venue/seating arrangement needs improvement for the next session.')">⚠ Venue/seating needs improvement</button>
             </div>
             <textarea oninput="f_set('pendingMatters', this.value)">${escapeHtml(f.pendingMatters)}</textarea>
           </div>
@@ -3229,8 +3222,6 @@ function renderCourseDetails(){
       </div>
       ${courseDocs.length ? `<div class="doc-file-list" style="margin-top:12px">${courseDocRows}</div>` : `<div class="helper-text" style="margin-top:10px">No letters uploaded yet.</div>`}
     </div>
-
-    ${presentationGroupsPanelHTML(courseDetailsCourse)}
   `;
 }
 
@@ -3467,8 +3458,6 @@ async function restoreBackup(input){
     DB.participants = parsed.participants || {};
     DB.schedules = parsed.schedules || {};
     DB.courseDocs = parsed.courseDocs || {};
-    DB.presentationGroups = parsed.presentationGroups || {};
-    DB.presentationReports = parsed.presentationReports || [];
     await saveDB();
     alert('Backup restored successfully.');
     navigate('dashboard');
@@ -3495,7 +3484,7 @@ function s_removeCourse(i){
 }
 async function resetAllData(){
   if(!confirm('This will permanently delete ALL reports, participants, and reset courses to default. Continue?')) return;
-  DB = { coordinatorName:'', courses: JSON.parse(JSON.stringify(DEFAULT_COURSES)), reports: [], participants: {}, schedules: {}, courseDocs: {}, presentationGroups: {}, presentationReports: [] };
+  DB = { coordinatorName:'', courses: JSON.parse(JSON.stringify(DEFAULT_COURSES)), reports: [], participants: {}, schedules: {}, courseDocs: {} };
   await saveDB();
   navigate('dashboard');
 }
@@ -4031,6 +4020,8 @@ async function buildReportWorksheet(wb, r, sheetName){
   const onLeave = useRoster ? roster.filter(p=>(statusMap[p.id]||'P')==='L').length : (parseInt(r.attendance.leave,10)||0);
   const absent = useRoster ? roster.filter(p=>(statusMap[p.id]||'P')==='A').length : (total ? Math.max(total-present-onLeave,0) : 0);
   const pctLabel = total ? (Math.round((present/total)*1000)/10)+'%' : '—';
+  const leaveNames = useRoster ? roster.filter(p=>(statusMap[p.id]||'P')==='L').map(p=>p.name).filter(Boolean) : [];
+  const absentNames = useRoster ? roster.filter(p=>(statusMap[p.id]||'P')==='A').map(p=>p.name).filter(Boolean) : [];
 
   const code = r.courseCode;
   const s = courseStats(code, r.date);
@@ -4141,6 +4132,16 @@ async function buildReportWorksheet(wb, r, sheetName){
     kvRow('On Leave', onLeave||'—', GOLD);
     kvRow('Absent', absent, RED);
     kvRow('Attendance %', pctLabel, ACCENT);
+    if(leaveNames.length){
+      setCell(row,1,row,3,{ value:'On Leave (Names)', font:{ bold:true, size:12, color:{argb:currentAccent} }, fill:currentTint, height:36 });
+      setCell(row,4,row,8,{ value:leaveNames.join(', '), font:{ size:12, color:{argb:GOLD} }, fill:PAPER, height:36 });
+      row++;
+    }
+    if(absentNames.length){
+      setCell(row,1,row,3,{ value:'Absent (Names)', font:{ bold:true, size:12, color:{argb:currentAccent} }, fill:currentTint, height:36 });
+      setCell(row,4,row,8,{ value:absentNames.join(', '), font:{ size:12, color:{argb:RED} }, fill:PAPER, height:36 });
+      row++;
+    }
     addImageAt(attDonutImg, attStartRow, 5, 130, 130);
     row += 1;
   }
@@ -4434,333 +4435,6 @@ async function exportAttendanceSheetToExcel(courseCode){
   alert('Sorry, the Excel export failed: ' + (err && err.message ? err.message : err));
  }
 }
-
-/* ============================================================
-   PROJECT PRESENTATION GROUPS & REPORTS
-   ============================================================ */
-
-// Parses a pasted list of presentation groups into
-// { groups:[{id,name,date,memberIds}], unmatched:[names that couldn't be matched] }
-// Expected paste format:
-//   Group A - 2026-07-19
-//   Ms. Fariha Naaz
-//   Dr. Ch. Haroon Zaman
-//   (blank line)
-//   Group B - 2026-07-25
-//   ...
-// Names are matched against the course's Participants roster; matching
-// ignores common titles (Mr./Ms./Dr./Prof./etc.) so small title mismatches
-// between the group list and the roster don't stop a match.
-function parseGroupsText(text, courseCode){
-  const roster = DB.participants[courseCode] || [];
-  const stripTitle = (name)=> String(name||'').replace(/^(mr\.?|mrs\.?|ms\.?|dr\.?|prof\.?|brig\.?|capt\.?|lt\.?\s*cdr\.?|cdr\.?|engr\.?)\s+/i,'').trim();
-  const findId = (name)=>{
-    const norm = name.trim().toLowerCase();
-    let p = roster.find(p=>p.name.trim().toLowerCase()===norm);
-    if(p) return p.id;
-    const stripped = stripTitle(name).toLowerCase();
-    p = roster.find(p=>stripTitle(p.name).toLowerCase()===stripped);
-    return p ? p.id : null;
-  };
-  const lines = text.split('\n').map(l=>l.trim());
-  const groups = [];
-  const unmatched = [];
-  let current = null;
-  lines.forEach(line=>{
-    if(!line) return;
-    const headerMatch = line.match(/^group\s*([A-Za-z0-9]+)\s*[-–—:]?\s*(.*)$/i);
-    if(headerMatch){
-      const dateStr = headerMatch[2] ? parseFlexibleDate(headerMatch[2]) : '';
-      current = { id: uid(), name: 'Group ' + headerMatch[1].toUpperCase(), date: dateStr, memberIds: [] };
-      groups.push(current);
-      return;
-    }
-    if(current){
-      const id = findId(line);
-      if(id){ if(!current.memberIds.includes(id)) current.memberIds.push(id); }
-      else unmatched.push(`${current.name}: "${line}"`);
-    }
-  });
-  return { groups, unmatched };
-}
-
-function presentationGroupsPanelHTML(code){
-  const groups = (DB.presentationGroups && DB.presentationGroups[code]) || [];
-  const roster = DB.participants[code] || [];
-  const rosterMap = Object.fromEntries(roster.map(p=>[p.id,p.name]));
-  const rows = groups.map((g,i)=>`
-    <div class="doc-file-row" style="align-items:flex-start;flex-direction:column;gap:6px">
-      <div style="display:flex;justify-content:space-between;width:100%">
-        <b>${escapeHtml(g.name)} — ${g.date ? fmtDate(g.date) : 'no date set'}</b>
-        <button class="icon-btn" title="Remove group" onclick="pg_removeGroup('${escapeHtml(code)}',${i})">✕</button>
-      </div>
-      <div class="helper-text">${g.memberIds.length} member(s): ${g.memberIds.map(id=>escapeHtml(rosterMap[id]||'(unknown)')).join(', ') || '—'}</div>
-    </div>`).join('');
-  return `
-    <div class="panel">
-      <h2>Presentation Groups</h2>
-      <p style="margin:0 0 10px;color:var(--muted)">Paste the group list below — one "Group X - YYYY-MM-DD" header line per group, followed by one participant name per line (matched against the ${escapeHtml(code)} Participants roster). Saving replaces all groups currently stored for this course.</p>
-      <div class="bulk-add">
-        <textarea id="groups-paste-text" placeholder="Group A - 2026-07-19&#10;Ms. Fariha Naaz&#10;Dr. Ch. Haroon Zaman&#10;...&#10;&#10;Group B - 2026-07-25&#10;..."></textarea>
-      </div>
-      <div class="btn-bar">
-        <button class="btn btn-primary" onclick="pg_saveGroups('${escapeHtml(code)}')">Save Groups (replaces existing)</button>
-      </div>
-      ${rows ? `<div class="doc-file-list" style="margin-top:16px">${rows}</div>` : `<div class="helper-text" style="margin-top:10px">No groups added yet for ${escapeHtml(code)}.</div>`}
-    </div>`;
-}
-
-function pg_saveGroups(code){
-  const ta = document.getElementById('groups-paste-text');
-  const text = ta ? ta.value : '';
-  if(!text.trim()) return;
-  const { groups, unmatched } = parseGroupsText(text, code);
-  if(!groups.length){
-    alert('Koi group detect nahi hui — format check karein: "Group A - 2026-07-19" ke baad har line par ek participant ka naam.');
-    return;
-  }
-  if(!DB.presentationGroups) DB.presentationGroups = {};
-  DB.presentationGroups[code] = groups;
-  saveDB();
-  render();
-  if(unmatched.length){
-    alert(`Groups save ho gayi, lekin ${unmatched.length} naam Participants roster se match nahi huay (isliye group mein add nahi huay):\n\n${unmatched.join('\n')}\n\nInhe Participants page par sahi spelling se check kar ke, list dubara paste kar dein.`);
-  }
-}
-function pg_removeGroup(code, i){
-  if(!confirm('Remove this group? Any presentation reports already filed for it are kept.')) return;
-  DB.presentationGroups[code].splice(i,1);
-  saveDB();
-  render();
-}
-
-// ---- New Presentation Report ----
-function blankPresentationReport(){
-  const courseCode = DB.courses[0] ? DB.courses[0].code : '';
-  return {
-    id: null, courseCode, groupId: '', batchNo: '', date: todayISO(),
-    entries: [], notes: '',
-    preparedBy: DB.coordinatorName || '', preparedDate: todayISO()
-  };
-}
-
-function renderPresentationReportForm(){
-  const f = presentationDraft;
-  const courseOptions = DB.courses.map(c=>`<option value="${escapeHtml(c.code)}" ${c.code===f.courseCode?'selected':''}>${escapeHtml(c.code)}</option>`).join('');
-  const groups = (DB.presentationGroups && DB.presentationGroups[f.courseCode]) || [];
-  const groupOptions = `<option value="">— Select Group —</option>` + groups.map(g=>`<option value="${g.id}" ${g.id===f.groupId?'selected':''}>${escapeHtml(g.name)}${g.date?' ('+fmtDate(g.date)+')':''}</option>`).join('');
-  const group = groups.find(g=>g.id===f.groupId);
-  const roster = DB.participants[f.courseCode] || [];
-  const rosterMap = Object.fromEntries(roster.map(p=>[p.id,p.name]));
-
-  let memberRows = '';
-  if(group){
-    memberRows = group.memberIds.map(pid=>{
-      const entry = f.entries.find(e=>e.participantId===pid) || { participantId:pid, present:'Yes', status:'Not Completed' };
-      const name = rosterMap[pid] || '(unknown)';
-      return `
-      <div class="roster-chip ${entry.present==='Yes' ? (entry.status==='Completed'?'is-present':'is-leave') : 'is-absent'}">
-        <span class="roster-name">${escapeHtml(name)}</span>
-        <div class="att-toggle">
-          <button type="button" class="${entry.present==='Yes'&&entry.status==='Completed'?'active-P':''}" onclick="pr_setEntry('${pid}','Yes','Completed')" title="Present & Completed">Done</button>
-          <button type="button" class="${entry.present==='Yes'&&entry.status==='Not Completed'?'active-L':''}" onclick="pr_setEntry('${pid}','Yes','Not Completed')" title="Present but Not Completed">Pending</button>
-          <button type="button" class="${entry.present==='No'?'active-A':''}" onclick="pr_setEntry('${pid}','No','Not Completed')" title="Absent">Absent</button>
-        </div>
-      </div>`;
-    }).join('');
-  }
-
-  const completedCount = f.entries.filter(e=>e.status==='Completed').length;
-  const absentCount = f.entries.filter(e=>e.present==='No').length;
-
-  return `
-    <h1 class="page-title">${editingPresentationId ? 'Edit' : 'New'} Project Presentation Report</h1>
-    <p class="page-sub">Select the course and the group presenting today, then mark each participant Completed, Pending, or Absent.</p>
-
-    <div class="panel">
-      <div class="field-grid">
-        <div class="field"><label>Course Title</label>
-          <select onchange="pr_setCourse(this.value)">${courseOptions}</select>
-        </div>
-        <div class="field"><label>Batch No.</label>
-          <input type="text" value="${escapeHtml(f.batchNo)}" placeholder="e.g. B-14" oninput="pr_set('batchNo', this.value)">
-        </div>
-        <div class="field"><label>Presentation Group</label>
-          <select onchange="pr_setGroup(this.value)">${groupOptions}</select>
-        </div>
-        <div class="field"><label>Date</label>
-          <input type="date" value="${escapeHtml(f.date)}" oninput="pr_set('date', this.value)">
-        </div>
-      </div>
-
-      ${group ? `
-      <div class="form-section">
-        <h3>Participants — ${escapeHtml(group.name)}</h3>
-        <div class="roster-grid">${memberRows}</div>
-        <div class="helper-text" style="margin-top:10px">Completed: <b style="color:var(--accent)">${completedCount}</b> &nbsp;·&nbsp; Absent: <b style="color:var(--red)">${absentCount}</b> (will move automatically to the last group when saved)</div>
-      </div>
-      <div class="form-section">
-        <h3>Notes</h3>
-        <textarea placeholder="Any remarks about today's presentations..." oninput="pr_set('notes', this.value)">${escapeHtml(f.notes)}</textarea>
-      </div>
-      ` : `<div class="helper-text" style="margin-top:14px">Select a group above to mark attendance and completion. No groups yet? Add them on the <a href="#" onclick="navigate('course-details');return false;">Course Details</a> page.</div>`}
-
-      <div class="btn-bar">
-        <button class="btn btn-primary" onclick="submitPresentationReport()">${editingPresentationId ? 'Save Changes' : 'Save Report'}</button>
-        <button class="btn btn-secondary" onclick="navigate('presentation-reports-log')">Cancel</button>
-      </div>
-    </div>
-  `;
-}
-
-function pr_set(field, val){ presentationDraft[field] = val; render(); }
-function pr_setCourse(code){
-  presentationDraft.courseCode = code;
-  presentationDraft.groupId = '';
-  presentationDraft.entries = [];
-  render();
-}
-function pr_setGroup(groupId){
-  presentationDraft.groupId = groupId;
-  const groups = (DB.presentationGroups && DB.presentationGroups[presentationDraft.courseCode]) || [];
-  const group = groups.find(g=>g.id===groupId);
-  if(group && group.date) presentationDraft.date = group.date;
-  presentationDraft.entries = group ? group.memberIds.map(pid=>({participantId:pid, present:'Yes', status:'Not Completed'})) : [];
-  render();
-}
-function pr_setEntry(participantId, present, status){
-  let e = presentationDraft.entries.find(x=>x.participantId===participantId);
-  if(!e){ e = {participantId, present, status}; presentationDraft.entries.push(e); }
-  e.present = present; e.status = status;
-  render();
-}
-
-async function submitPresentationReport(){
-  const f = presentationDraft;
-  if(!f.groupId){ alert('Please select a presentation group.'); return; }
-  const code = f.courseCode;
-  const groups = DB.presentationGroups[code] || [];
-  const group = groups.find(g=>g.id===f.groupId);
-
-  // Move any absent participant to the last group's member list so they're
-  // automatically scheduled for the next presentation day.
-  const absentIds = f.entries.filter(e=>e.present==='No').map(e=>e.participantId);
-  if(absentIds.length && groups.length){
-    const lastGroup = groups[groups.length-1];
-    absentIds.forEach(pid=>{
-      if(lastGroup.id !== group.id && !lastGroup.memberIds.includes(pid)) lastGroup.memberIds.push(pid);
-    });
-  }
-
-  if(editingPresentationId){
-    const idx = DB.presentationReports.findIndex(r=>r.id===editingPresentationId);
-    f.id = editingPresentationId;
-    DB.presentationReports[idx] = f;
-  } else {
-    f.id = uid();
-    DB.presentationReports.push(f);
-  }
-  await saveDB();
-  const savedId = f.id;
-  presentationDraft = null; editingPresentationId = null;
-  navigate('presentation-report-detail', {id: savedId});
-}
-
-function renderPresentationReportsLog(){
-  const list = (DB.presentationReports||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
-  const rows = list.map(r=>{
-    const completed = r.entries.filter(e=>e.status==='Completed').length;
-    const absent = r.entries.filter(e=>e.present==='No').length;
-    const groups = DB.presentationGroups[r.courseCode] || [];
-    const group = groups.find(g=>g.id===r.groupId);
-    return `<tr class="clickable" onclick="navigate('presentation-report-detail',{id:'${r.id}'})">
-      <td><span class="course-code">${escapeHtml(r.courseCode)}</span></td>
-      <td>${escapeHtml(r.batchNo)}</td>
-      <td>${group ? escapeHtml(group.name) : '<span class="doc-empty">—</span>'}</td>
-      <td>${fmtDate(r.date)}</td>
-      <td><span class="badge badge-completed">${completed} completed</span> ${absent?`<span class="badge badge-no">${absent} absent</span>`:''}</td>
-    </tr>`;
-  }).join('');
-  return `
-    <h1 class="page-title">Presentation Reports Log</h1>
-    <p class="page-sub">Every Project Presentation Report you've submitted.</p>
-    <div class="toolbar">
-      <div></div>
-      <button class="btn btn-primary" onclick="navigate('new-presentation-report')">+ New Presentation Report</button>
-    </div>
-    <div class="panel">
-      ${list.length ? `<table><thead><tr><th>Course</th><th>Batch</th><th>Group</th><th>Date</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>` : `<div class="empty-state"><div class="big">No presentation reports yet</div><button class="btn btn-primary" onclick="navigate('new-presentation-report')">+ New Presentation Report</button></div>`}
-    </div>
-  `;
-}
-
-function renderPresentationReportDetail(){
-  const r = DB.presentationReports.find(x=>x.id===presentationDetailId);
-  if(!r) return `<div class="empty-state"><div class="big">Report not found</div></div>`;
-  const roster = DB.participants[r.courseCode] || [];
-  const rosterMap = Object.fromEntries(roster.map(p=>[p.id,p.name]));
-  const groups = DB.presentationGroups[r.courseCode] || [];
-  const group = groups.find(g=>g.id===r.groupId);
-  const rows = r.entries.map(e=>`
-    <tr>
-      <td>${escapeHtml(rosterMap[e.participantId]||'(unknown)')}</td>
-      <td>${e.present==='No' ? '<span class="badge badge-no">Absent</span>' : (e.status==='Completed' ? '<span class="badge badge-completed">Completed</span>' : '<span class="badge badge-pending">Pending</span>')}</td>
-    </tr>`).join('');
-  const completed = r.entries.filter(e=>e.status==='Completed').length;
-  const absent = r.entries.filter(e=>e.present==='No').length;
-
-  return `
-    <div class="toolbar">
-      <div>
-        <h1 class="page-title" style="margin-bottom:0">Project Presentation Report</h1>
-        <p class="page-sub" style="margin-top:4px">${escapeHtml(r.courseCode)} · Batch ${escapeHtml(r.batchNo)}${group ? ' · '+escapeHtml(group.name) : ''}</p>
-      </div>
-      <div style="display:flex;gap:10px">
-        <button class="btn btn-secondary" onclick="navigate('new-presentation-report',{id:'${r.id}'})">Edit</button>
-        <button class="btn btn-primary" onclick="window.print()">Print / Export PDF</button>
-        <button class="btn btn-danger" onclick="deletePresentationReport('${r.id}')">Delete</button>
-      </div>
-    </div>
-    <div class="report-doc">
-      <div class="doc-head">
-        <div><h1>Project Presentation Report</h1><div class="org">PIQC Institute of Quality</div></div>
-        <div class="stamp stamp-ok">${group ? escapeHtml(group.name) : ''}</div>
-      </div>
-      <div class="meta-grid">
-        <div><b>Course Title:</b> ${escapeHtml(r.courseCode)}</div>
-        <div><b>Batch No.:</b> ${escapeHtml(r.batchNo)}</div>
-        <div><b>Group:</b> ${group ? escapeHtml(group.name) : '—'}</div>
-        <div><b>Date:</b> ${fmtDate(r.date)}</div>
-      </div>
-      <div class="doc-section">
-        <h3>Participants</h3>
-        <table class="doc-table"><thead><tr><th>Name</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
-        <div class="helper-text" style="margin-top:8px">Completed: <b style="color:var(--accent)">${completed}</b> / ${r.entries.length} &nbsp;·&nbsp; Absent: <b style="color:var(--red)">${absent}</b> (moved to the last group automatically)</div>
-      </div>
-      <div class="doc-section">
-        <h3>Notes</h3>
-        <div class="text-block">${escapeHtml(r.notes)||'—'}</div>
-      </div>
-      <div class="doc-section">
-        <h3>Course Tracking Summary — ${escapeHtml(r.courseCode)}</h3>
-        ${courseTrackingSummaryHTML(r.courseCode, r.date)}
-      </div>
-      <div class="sig-grid" style="display:block;text-align:center;margin-top:24px">
-        <div class="sig" style="border-top:1px solid var(--line);display:inline-block;padding-top:8px;min-width:260px">
-          <b>AIJAZ AHMED</b><br><span style="color:var(--muted);font-style:italic">Academic Coordinator</span>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-async function deletePresentationReport(id){
-  if(!confirm('Delete this presentation report permanently?')) return;
-  DB.presentationReports = DB.presentationReports.filter(r=>r.id!==id);
-  await saveDB();
-  navigate('presentation-reports-log');
-}
-
 
 /* ============================================================
    INIT
